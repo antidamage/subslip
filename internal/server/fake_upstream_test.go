@@ -14,16 +14,20 @@ import (
 // fakeUpstream is a small Subsonic server. Users: alice/secret, bob/bobpw.
 // Similar songs are per user (alice gets a*, bob gets b*), so a leak of one
 // user's cached mix to the other is visible. similarCount controls how many
-// tracks getSimilarSongs2 returns.
+// tracks getSimilarSongs2 returns. When similarGate is set, Instant Mix calls
+// block until it is closed (a slow upstream). libraryCount sets how many songs
+// getTopSongs and getRandomSongs return, for the interim.
 type fakeUpstream struct {
 	*httptest.Server
 	similarCount int
+	libraryCount int
+	similarGate  chan struct{}
 	calls        sync.Map // method -> *int64
 	streamBody   string
 }
 
 func newFakeUpstream(t *testing.T, similarCount int) *fakeUpstream {
-	f := &fakeUpstream{similarCount: similarCount, streamBody: strings.Repeat("0123456789", 100)}
+	f := &fakeUpstream{similarCount: similarCount, libraryCount: 8, streamBody: strings.Repeat("0123456789", 100)}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
@@ -66,7 +70,19 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "ping", "scrobble":
 		reply(w, map[string]any{})
+	case "getSong":
+		reply(w, map[string]any{"song": map[string]any{"id": r.Form.Get("id"), "title": "Seed", "artist": "Art", "genre": "Jazz"}})
+	case "getTopSongs", "getRandomSongs":
+		songs := []any{map[string]any{"id": "seed", "title": "Seed", "artist": "Art"}} // the seed must be dropped
+		for i := 0; i < f.libraryCount; i++ {
+			songs = append(songs, map[string]any{"id": fmt.Sprintf("%s-%s%d", method, prefix, i), "title": "L", "artist": "Art"})
+		}
+		element := map[string]string{"getTopSongs": "topSongs", "getRandomSongs": "randomSongs"}[method]
+		reply(w, map[string]any{element: map[string]any{"song": songs}})
 	case "getSimilarSongs2", "getSimilarSongs":
+		if f.similarGate != nil {
+			<-f.similarGate
+		}
 		songs := []any{}
 		for i := 0; i < f.similarCount; i++ {
 			songs = append(songs, map[string]any{"id": fmt.Sprintf("%s%d", prefix, i), "title": fmt.Sprintf("T%d", i), "artist": "Art"})

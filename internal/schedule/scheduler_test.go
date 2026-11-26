@@ -131,3 +131,40 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestMaxConcurrentAcrossUsers: with a cap of 1, a second user's job waits
+// until the first user's job returns.
+func TestMaxConcurrentAcrossUsers(t *testing.T) {
+	s, _ := newTest()
+	s.SetMaxConcurrent(1)
+	gate := make(chan struct{})
+	running := make(chan string, 2)
+	block := func(name string) Job {
+		return func(ctx context.Context) {
+			running <- name
+			if name == "a" {
+				<-gate
+			}
+		}
+	}
+	s.Enqueue("u1", "a", block("a"))
+	if got := <-running; got != "a" {
+		t.Fatalf("first job %s, want a", got)
+	}
+	s.Enqueue("u2", "b", block("b"))
+	select {
+	case got := <-running:
+		t.Fatalf("job %s ran while the only slot was taken", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(gate)
+	select {
+	case got := <-running:
+		if got != "b" {
+			t.Fatalf("second job %s, want b", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second job never ran after the slot was freed")
+	}
+	s.Wait()
+}

@@ -1,6 +1,7 @@
 // Package schedule runs background mix builds per user: a debounce on plays,
 // then at most one running ("active") and one waiting ("pending") build, with
-// a minimum gap between starts. Rules: specs/subslip.md section 4.
+// a minimum gap between starts, and a cap on builds running at once across all
+// users. Rules: specs/subslip.md section 4.
 //
 // File map:
 //   - scheduler.go  (this file) the state machine.
@@ -34,6 +35,8 @@ type Scheduler struct {
 	mu    sync.Mutex
 	users map[string]*userState
 	jobs  sync.WaitGroup
+	// slots caps jobs running at once across all users; nil means no cap.
+	slots chan struct{}
 }
 
 type queued struct {
@@ -56,6 +59,17 @@ func New(clock Clock, delay, gap, timeout time.Duration, event Event) *Scheduler
 		event = func(string, string, string) {}
 	}
 	return &Scheduler{clock: clock, delay: delay, gap: gap, timeout: timeout, event: event, users: map[string]*userState{}}
+}
+
+// SetMaxConcurrent caps how many jobs run at once across all users. A started
+// job waits for a free slot before its deadline begins. Call it before the
+// scheduler is used; n < 1 removes the cap.
+func (s *Scheduler) SetMaxConcurrent(n int) {
+	if n < 1 {
+		s.slots = nil
+		return
+	}
+	s.slots = make(chan struct{}, n)
 }
 
 // Play notes that user started song. Repeats for a song already debouncing,
@@ -213,6 +227,15 @@ func (s *Scheduler) run(user string, q *queued) {
 			s.event(user, q.song, "panicked")
 		}
 	}()
+	if s.slots != nil {
+		select {
+		case s.slots <- struct{}{}:
+		default:
+			s.event(user, q.song, "waiting-slot")
+			s.slots <- struct{}{}
+		}
+		defer func() { <-s.slots }()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 	q.job(ctx)

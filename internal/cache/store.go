@@ -2,7 +2,7 @@
 //
 // File map:
 //   - store.go  (this file) opening, schema, mix rows.
-//   - users.go  the mix_users table behind PRECACHE_ON_PLAY=auto, stats, purge.
+//   - users.go  stats and purge (mix_users, from v0.1, is kept but unused).
 //
 // The database is pure Go (modernc.org/sqlite), so the binary builds with
 // CGO_ENABLED=0 everywhere. SubSlip only ever opens its own file at DB_PATH;

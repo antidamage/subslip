@@ -1,8 +1,8 @@
-// users.go holds the mix_users table, cache statistics and purging.
+// users.go holds cache statistics and purging.
 //
-// Works with: store.go (the open database). mix_users records, by username
-// only, who has made an Instant Mix request through SubSlip. With
-// PRECACHE_ON_PLAY=auto only those users' plays are pre-cached (spec 5.1).
+// Works with: store.go (the open database). The mix_users table that v0.1's
+// PRECACHE_ON_PLAY=auto used is still created by store.go, so a downgrade
+// works, but nothing reads or writes it any more (spec section 10).
 package cache
 
 import (
@@ -11,40 +11,12 @@ import (
 	"time"
 )
 
-// MarkUser records that user has asked for an Instant Mix. It keeps the first
-// time it was seen.
-func (s *Store) MarkUser(ctx context.Context, user string) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO mix_users (username, first_seen) VALUES (?, ?)
-		 ON CONFLICT (username) DO NOTHING`, user, s.now().UnixMilli())
-	return err
-}
-
-// Users returns every recorded user and when each was first seen.
-func (s *Store) Users(ctx context.Context) (map[string]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT username, first_seen FROM mix_users`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	users := map[string]time.Time{}
-	for rows.Next() {
-		var name string
-		var first int64
-		if err := rows.Scan(&name, &first); err != nil {
-			return nil, err
-		}
-		users[name] = time.UnixMilli(first)
-	}
-	return users, rows.Err()
-}
-
 // Stats summarises the cache for status and `subslip cache stats`.
 type Stats struct {
 	Mixes       int        `json:"mixes"`
 	FreshMixes  int        `json:"freshMixes"`
 	Tracks      int        `json:"tracks"`
-	Users       int        `json:"users"`
+	Users       int        `json:"users"` // users with at least one cached mix
 	OldestBuilt *time.Time `json:"oldestBuilt,omitempty"`
 	NewestBuilt *time.Time `json:"newestBuilt,omitempty"`
 }
@@ -69,12 +41,12 @@ func (s *Store) Stats(ctx context.Context, ttl time.Duration) (Stats, error) {
 		t := time.UnixMilli(*newest)
 		st.NewestBuilt = &t
 	}
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mix_users`).Scan(&st.Users)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT username) FROM mixes`).Scan(&st.Users)
 	return st, err
 }
 
-// Purge deletes mixes. With onlyExpired it deletes those older than ttl and
-// keeps mix_users; otherwise it empties both tables.
+// Purge deletes mixes: with onlyExpired those older than ttl, otherwise all
+// of them (and the unused mix_users table).
 func (s *Store) Purge(ctx context.Context, onlyExpired bool, ttl time.Duration) (int64, error) {
 	if onlyExpired {
 		res, err := s.db.ExecContext(ctx, `DELETE FROM mixes WHERE built_at < ?`, s.now().Add(-ttl).UnixMilli())

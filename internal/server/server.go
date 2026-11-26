@@ -5,10 +5,13 @@
 //   - server.go      (this file) wiring, routing, panic recovery, the
 //     upstream identity refresher.
 //   - proxy.go       the reverse proxy and the pass-through/fallback helpers.
-//   - instantmix.go  getSimilarSongs / getSimilarSongs2: hit, miss, errors.
+//   - instantmix.go  getSimilarSongs / getSimilarSongs2: hit, errors.
+//   - miss.go        a miss: the detached upstream call, the interim, and a
+//     client that hangs up.
 //   - flights.go     shares one upstream call per (user, song) and the
 //     per-user flood rule.
 //   - playhook.go    stream / scrobble: schedules background builds.
+//   - backoff.go     rests a user's pre-cache after failed builds.
 //   - status.go      /subslip/health and /subslip/status.
 //
 // Hard rule (spec section 2): anything SubSlip cannot do degrades to plain
@@ -21,7 +24,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,11 +67,11 @@ type Server struct {
 	sched   *schedule.Scheduler
 	rec     *diag.Recorder
 	flights *flights
+	backoff *backoff
 	now     func() time.Time
 
 	identity  atomic.Value // upstream.Identity
 	meta      atomic.Value // subsonic.Meta of the latest upstream answer
-	mixUsers  sync.Map     // username -> time.Time first seen
 	startedAt time.Time
 }
 
@@ -89,6 +91,11 @@ func New(opts Options) *Server {
 	s.proxy = newProxy(cfg.UpstreamURL, opts.Logger)
 	s.gate = auth.New(s.up, cfg.AuthCacheTTL)
 	s.flights = newFlights(cfg.MixRateLimit, clock.Now)
+	s.flights.panicked = func(where string, value any) {
+		s.log.Error("recovered from a panic in a detached Instant Mix call", "where", where, "panic", slog.AnyValue(value).String())
+		s.rec.Record("panic", "", "", where)
+	}
+	s.backoff = newBackoff(clock.Now)
 	s.builder = &mix.Builder{
 		Up: s.up, MinTracks: cfg.MinMixTracks, MaxTracks: cfg.MaxMixTracks,
 		MaxSearchLookups: cfg.MaxSearchLookups, SupplementDeadline: cfg.SupplementDeadline, Log: opts.Logger,
@@ -97,8 +104,8 @@ func New(opts Options) *Server {
 		s.builder.LB = listenbrainz.New(cfg.ListenBrainzAPIURL, "SubSlip/"+opts.Version+" (+https://github.com/antidamage/subslip)")
 	}
 	s.sched = schedule.New(clock, cfg.PlayDelay, cfg.BackgroundGap, cfg.BuildTimeout, s.schedulerEvent)
+	s.sched.SetMaxConcurrent(cfg.BackgroundMaxConcurrent)
 	s.identity.Store(upstream.Identity{Kind: "unknown"})
-	s.loadMixUsers()
 	return s
 }
 
@@ -206,22 +213,6 @@ func (s *Server) refreshIdentity(ctx context.Context) {
 func (s *Server) schedulerEvent(user, song, what string) {
 	s.rec.Record("background:"+what, user, song, "")
 	s.log.Debug("background build", "event", what, "user", user, "song", song)
-}
-
-func (s *Server) loadMixUsers() {
-	if s.store == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	users, err := s.store.Users(ctx)
-	if err != nil {
-		s.log.Warn("could not read pre-cache users; auto pre-caching starts empty", "error", err)
-		return
-	}
-	for name, first := range users {
-		s.mixUsers.Store(name, first)
-	}
 }
 
 // trackingWriter remembers whether a response has started, so recovery knows

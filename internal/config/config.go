@@ -26,11 +26,17 @@ type Config struct {
 	CacheRefresh  time.Duration
 	MinMixTracks  int
 	MaxMixTracks  int
-	PrecacheMode  string // auto, true or false
+	PrecacheMode  string // true or false ("auto" from v0.1 is read as true)
 	PlayDelay     time.Duration
 	BackgroundGap time.Duration
 	MixRateLimit  time.Duration
 	BuildTimeout  time.Duration
+	// BackgroundMaxConcurrent caps background builds across all users.
+	BackgroundMaxConcurrent int
+	// MissWait is how long a miss waits on the upstream before an interim
+	// answer is built; 0 turns the interim off. InterimBudget bounds that build.
+	MissWait      time.Duration
+	InterimBudget time.Duration
 
 	MaxSearchLookups   int
 	SupplementDeadline time.Duration
@@ -79,29 +85,32 @@ func Load(envPath string) (*Config, error) {
 func FromMap(values map[string]string) *Config {
 	r := reader{values: values}
 	cfg := &Config{
-		ListenAddr:          r.listenAddr(),
-		BasePath:            strings.TrimRight(r.str("BASE_PATH", ""), "/"),
-		Passthrough:         strings.EqualFold(r.str("SUBSLIP_MODE", "normal"), "passthrough"),
-		DBPath:              r.str("DB_PATH", "./data/instant_mix_cache.db"),
-		CacheTTL:            r.hours("CACHE_TTL_HOURS", 24),
-		CacheRefresh:        r.hours("CACHE_REFRESH_HOURS", 6),
-		MinMixTracks:        r.integer("MIN_MIX_TRACKS", 15),
-		MaxMixTracks:        r.integer("MAX_MIX_TRACKS", 25),
-		PrecacheMode:        r.choice("PRECACHE_ON_PLAY", "auto", "auto", "true", "false"),
-		PlayDelay:           r.seconds("FETCH_ON_PLAY_DELAY_SECONDS", 10),
-		BackgroundGap:       r.seconds("REMOTE_STATION_API_QUERY_RATE_LIMIT_SECONDS", 10),
-		MixRateLimit:        r.seconds("MIX_RATE_LIMIT_SECONDS", 10),
-		BuildTimeout:        r.seconds("BACKGROUND_BUILD_TIMEOUT_SECONDS", 90),
-		MaxSearchLookups:    r.integer("MAX_SEARCH_LOOKUPS", 20),
-		SupplementDeadline:  r.seconds("SUPPLEMENT_DEADLINE_SECONDS", 20),
-		RequireAuth:         r.boolean("REQUIRE_AUTH", true),
-		AuthCacheTTL:        r.seconds("AUTH_CACHE_TTL_SECONDS", 60),
-		ListenBrainzEnabled: r.boolean("LISTENBRAINZ_ENABLED", true),
-		ListenBrainzAPIURL:  strings.TrimRight(r.str("LISTENBRAINZ_API_URL", "https://api.listenbrainz.org"), "/"),
-		StatusToken:         r.str("STATUS_TOKEN", ""),
-		LogLevel:            r.choice("LOG_LEVEL", "info", "debug", "info", "warn", "error"),
-		LogFormat:           r.choice("LOG_FORMAT", "text", "text", "json"),
-		LogFile:             r.str("LOG_FILE", ""),
+		ListenAddr:              r.listenAddr(),
+		BasePath:                strings.TrimRight(r.str("BASE_PATH", ""), "/"),
+		Passthrough:             strings.EqualFold(r.str("SUBSLIP_MODE", "normal"), "passthrough"),
+		DBPath:                  r.str("DB_PATH", "./data/instant_mix_cache.db"),
+		CacheTTL:                r.hours("CACHE_TTL_HOURS", 24),
+		CacheRefresh:            r.hours("CACHE_REFRESH_HOURS", 6),
+		MinMixTracks:            r.integer("MIN_MIX_TRACKS", 15),
+		MaxMixTracks:            r.integer("MAX_MIX_TRACKS", 25),
+		PrecacheMode:            r.precacheMode(),
+		PlayDelay:               r.seconds("FETCH_ON_PLAY_DELAY_SECONDS", 10),
+		BackgroundGap:           r.seconds("REMOTE_STATION_API_QUERY_RATE_LIMIT_SECONDS", 10),
+		MixRateLimit:            r.seconds("MIX_RATE_LIMIT_SECONDS", 10),
+		BuildTimeout:            r.seconds("BACKGROUND_BUILD_TIMEOUT_SECONDS", 90),
+		BackgroundMaxConcurrent: r.integer("BACKGROUND_MAX_CONCURRENT", 2),
+		MissWait:                r.fractionalSeconds("MISS_WAIT_SECONDS", 22),
+		InterimBudget:           r.fractionalSeconds("INTERIM_BUDGET_SECONDS", 6),
+		MaxSearchLookups:        r.integer("MAX_SEARCH_LOOKUPS", 20),
+		SupplementDeadline:      r.seconds("SUPPLEMENT_DEADLINE_SECONDS", 20),
+		RequireAuth:             r.boolean("REQUIRE_AUTH", true),
+		AuthCacheTTL:            r.seconds("AUTH_CACHE_TTL_SECONDS", 60),
+		ListenBrainzEnabled:     r.boolean("LISTENBRAINZ_ENABLED", true),
+		ListenBrainzAPIURL:      strings.TrimRight(r.str("LISTENBRAINZ_API_URL", "https://api.listenbrainz.org"), "/"),
+		StatusToken:             r.str("STATUS_TOKEN", ""),
+		LogLevel:                r.choice("LOG_LEVEL", "info", "debug", "info", "warn", "error"),
+		LogFormat:               r.choice("LOG_FORMAT", "text", "text", "json"),
+		LogFile:                 r.str("LOG_FILE", ""),
 	}
 	cfg.UpstreamURL = r.upstream()
 	if cfg.MaxMixTracks < 1 {
@@ -111,6 +120,14 @@ func FromMap(values map[string]string) *Config {
 	if cfg.MinMixTracks > cfg.MaxMixTracks {
 		r.warn("MIN_MIX_TRACKS is above MAX_MIX_TRACKS; using MAX_MIX_TRACKS")
 		cfg.MinMixTracks = cfg.MaxMixTracks
+	}
+	if cfg.BackgroundMaxConcurrent < 1 {
+		r.warn("BACKGROUND_MAX_CONCURRENT must be at least 1; using 2")
+		cfg.BackgroundMaxConcurrent = 2
+	}
+	if cfg.MissWait > 0 && cfg.InterimBudget <= 0 {
+		r.warn("INTERIM_BUDGET_SECONDS must be above 0 when MISS_WAIT_SECONDS is set; using 6")
+		cfg.InterimBudget = 6 * time.Second
 	}
 	if cfg.BasePath != "" && !strings.HasPrefix(cfg.BasePath, "/") {
 		cfg.BasePath = "/" + cfg.BasePath
@@ -151,6 +168,35 @@ func (r *reader) integer(key string, def int) int {
 
 func (r *reader) seconds(key string, def int) time.Duration {
 	return time.Duration(r.integer(key, def)) * time.Second
+}
+
+// fractionalSeconds accepts whole or decimal seconds ("22", "0.5").
+func (r *reader) fractionalSeconds(key string, def float64) time.Duration {
+	raw := r.str(key, "")
+	if raw == "" {
+		return time.Duration(def * float64(time.Second))
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || f < 0 {
+		r.warn("%s=%q is not a number of seconds; using %g", key, raw, def)
+		return time.Duration(def * float64(time.Second))
+	}
+	return time.Duration(f * float64(time.Second))
+}
+
+// precacheMode reads PRECACHE_ON_PLAY. v0.1's default "auto" (pre-cache only
+// after a user's first Instant Mix) is gone; it is read as true.
+func (r *reader) precacheMode() string {
+	raw := strings.ToLower(r.str("PRECACHE_ON_PLAY", "true"))
+	switch raw {
+	case "true", "false":
+		return raw
+	case "auto":
+		r.warn("PRECACHE_ON_PLAY=auto was removed in v0.2; every user is pre-cached (set false to turn it off)")
+		return "true"
+	}
+	r.warn("PRECACHE_ON_PLAY=%q is not true or false; using true", raw)
+	return "true"
 }
 
 func (r *reader) hours(key string, def int) time.Duration {

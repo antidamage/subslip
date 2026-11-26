@@ -14,6 +14,10 @@ of waiting on the server's recommendation engine.
 back to your server's own address.** Keep that address saved in your client.
 Installing SubSlip never changes it.
 
+Each song a user plays costs one Instant Mix call to your server in the
+background, whether or not they use Instant Mix. `PRECACHE_ON_PLAY=false`
+turns that off.
+
 ## How it works
 
 ```
@@ -31,7 +35,13 @@ Subsonic client ──► SubSlip :5276 ──► Octo or Navidrome ──► (O
 - **When you ask for an Instant Mix** (`getSimilarSongs` or `getSimilarSongs2`),
   a stored mix comes back from the cache. Without one, SubSlip makes the same
   call your client would have made, returns it as soon as it arrives, and
-  stores it for next time. A miss costs what the server costs, and no more.
+  stores it for next time.
+- **A slow server does not make the client give up.** If your server has not
+  answered after 22 seconds (`MISS_WAIT_SECONDS`), SubSlip answers with a short
+  interim list of songs by the same artist and in the same genre. It keeps
+  waiting on your server, stores the real mix when it arrives, and serves that
+  mix the next time you ask. If the client gives up anyway, the real mix is
+  still stored.
 - **Short mixes are topped up.** When the server returns fewer than 15 tracks,
   SubSlip asks ListenBrainz for recordings by similar artists and keeps the
   ones your server can play, found with its own search. The server's tracks
@@ -47,10 +57,12 @@ Subsonic client ──► SubSlip :5276 ──► Octo or Navidrome ──► (O
 - Any Instant Mix requested before, for up to 24 hours (refreshed in the
   background after 6).
 
-An Instant Mix on a song you have not played is as fast as your server, and the
-next one on that song comes from the cache. Each user's first Instant Mix
-through SubSlip is a normal server call; pre-caching for that user starts
-after it, so people who never use Instant Mix add no load at all.
+An Instant Mix on a song you have not played is as fast as your server, or
+gets the interim list if your server is very slow. The next one on that song
+comes from the cache. Every user is pre-cached from their first play. At most
+two background builds run at once (`BACKGROUND_MAX_CONCURRENT`). After three
+failed builds in a row, a user's pre-caching rests for ten minutes, so a
+failing server gets no extra load.
 
 If your server already answers Instant Mix quickly, SubSlip gains you little.
 `SUBSLIP_MODE=passthrough` turns it into a plain proxy.
@@ -129,7 +141,8 @@ in [`.env.example`](.env.example). The ones you are most likely to change:
 | --- | --- | --- |
 | `UPSTREAM_URL` | `http://127.0.0.1:4533` | Your server, with any base path |
 | `LISTEN_ADDR` | `0.0.0.0:5276` | Where clients connect |
-| `PRECACHE_ON_PLAY` | `auto` | `auto`: only users who have used Instant Mix; `true`; `false` |
+| `PRECACHE_ON_PLAY` | `true` | `false` stops background pre-caching (`auto`, from v0.1, is read as `true`) |
+| `MISS_WAIT_SECONDS` / `INTERIM_BUDGET_SECONDS` | 22 / 6 | When to send the interim list, and how long building it may take; `0` turns it off |
 | `MIN_MIX_TRACKS` / `MAX_MIX_TRACKS` | 15 / 25 | Top-up threshold and mix size |
 | `CACHE_TTL_HOURS` / `CACHE_REFRESH_HOURS` | 24 / 6 | Longest a mix is served / when it is rebuilt |
 | `REQUIRE_AUTH` | `true` | Check credentials with the server before serving from cache |
@@ -153,7 +166,8 @@ line, status event and error message. `/subslip/health` says only `ok`;
 ## Diagnostics
 
 - **`X-SubSlip` response header** on every response: `passthrough`,
-  `hit;age=<seconds>`, `miss`, `busy` (proxied because another Instant Mix for
+  `hit;age=<seconds>`, `miss`, `interim` (the server was slow; a short related
+  list was sent and the real mix is stored for next time), `busy` (proxied because another Instant Mix for
   that user was in flight), `auth-failed`, `upstream-error`, or
   `fallback:<code>` when SubSlip gave up and proxied the request.
 - **`subslip doctor`** checks settings, the cache, the server, a login, cold

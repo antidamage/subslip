@@ -1,17 +1,17 @@
 // playhook.go pre-caches the Instant Mix of the song a user starts playing.
 //
 // Works with: server.go (calls playHook before proxying stream/scrobble),
-// instantmix.go (reuses backgroundJob and storeResult), internal/schedule.
+// instantmix.go (serveHit queues refreshes through backgroundJob), miss.go
+// and flights.go (a build and a request for the same song share one upstream
+// call), backoff.go, internal/schedule.
 //
-// The hook only schedules work; it never delays the stream. With
-// PRECACHE_ON_PLAY=auto it does nothing for a user until that user has made an
-// Instant Mix request through SubSlip (spec 5.1).
+// The hook only schedules work; it never delays the stream. Every user is
+// pre-cached unless PRECACHE_ON_PLAY=false (spec 4.7, 5.1).
 package server
 
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/antidamage/subslip/internal/cache"
 	"github.com/antidamage/subslip/internal/mix"
@@ -31,10 +31,11 @@ func (s *Server) playHook(req *subsonic.Request) {
 		return
 	}
 	user := req.Auth.UserOrDefault()
-	if s.cfg.PrecacheMode == "auto" && !s.knownUser(user) {
+	s.rec.SeeClient(req.Auth.Client, "")
+	if s.backoff.resting(user) {
+		s.log.Debug("play noted; pre-cache resting after failed builds", "user", user, "song", id)
 		return
 	}
-	s.rec.SeeClient(req.Auth.Client, "")
 	if s.sched.Play(user, id, s.backgroundJob(user, id, req.Auth, false)) {
 		s.log.Debug("play noted; pre-cache debouncing", "user", user, "song", id)
 	}
@@ -42,7 +43,8 @@ func (s *Server) playHook(req *subsonic.Request) {
 
 // backgroundJob builds and stores the mix for (user, id). Unless force is set
 // it first checks the cache and skips a mix that is still fresh enough not to
-// need a refresh, which costs no upstream call.
+// need a refresh, which costs no upstream call. It joins any flight already
+// running for the song; the flight's starter stores the result.
 func (s *Server) backgroundJob(user, id string, a subsonic.Auth, force bool) func(context.Context) {
 	return func(ctx context.Context) {
 		if !force {
@@ -51,17 +53,41 @@ func (s *Server) backgroundJob(user, id string, a subsonic.Auth, force bool) fun
 				return
 			}
 		}
-		result, err := s.builder.Build(ctx, a, id)
-		if err != nil {
-			kind := "background:failed"
-			if upstream.IsAuthFailure(err) {
-				kind = "background:auth-failed"
-			}
-			s.rec.Record(kind, user, id, err.Error())
-			s.log.Debug("background build failed", "user", user, "song", id, "error", err)
+		fl, leader := s.flights.join(user, id, s.cfg.BuildTimeout, func(ctx context.Context) (*mix.Stage1Result, error) {
+			return s.builder.Stage1(ctx, a, "getsimilarsongs2", id, s.cfg.MaxMixTracks)
+		}, nil)
+		select {
+		case <-fl.done:
+		case <-ctx.Done():
+			s.backgroundFailed(user, id, ctx.Err())
 			return
 		}
-		s.storeResult(ctx, user, id, result)
+		if fl.err != nil {
+			s.backgroundFailed(user, id, fl.err)
+			return
+		}
+		s.backoff.succeeded(user)
+		if !leader {
+			s.rec.Record("background:joined", user, id, "a request started this call; it stores the mix")
+			return
+		}
+		s.storeResult(ctx, user, id, s.builder.Finish(ctx, a, id, fl.res))
+		if fl.interimWasSent() && len(fl.res.Songs) > 0 {
+			s.rec.Count("interim-then-real")
+		}
+	}
+}
+
+func (s *Server) backgroundFailed(user, id string, err error) {
+	kind := "background:failed"
+	if upstream.IsAuthFailure(err) {
+		kind = "background:auth-failed"
+	}
+	s.rec.Record(kind, user, id, err.Error())
+	s.log.Debug("background build failed", "user", user, "song", id, "error", err)
+	if s.backoff.failed(user) {
+		s.rec.Record("background:resting", user, id, fmt.Sprintf("%d failed builds in a row; pre-cache rests for %s", backoffFailures, backoffRest))
+		s.log.Info("pre-cache resting after failed builds", "user", user, "for", backoffRest.String())
 	}
 }
 
@@ -92,24 +118,4 @@ func (s *Server) storeResult(ctx context.Context, user, id string, result *mix.R
 	s.rec.Record("stored", user, id, detail)
 	s.log.Info("mix stored", "user", user, "song", id, "tracks", len(result.Songs),
 		"supplemented", result.Supplemented, "source", result.Source, "ms", result.Took.Milliseconds())
-}
-
-// markUser records an Instant Mix user for PRECACHE_ON_PLAY=auto.
-func (s *Server) markUser(user string) {
-	if _, known := s.mixUsers.Load(user); known {
-		return
-	}
-	s.mixUsers.Store(user, s.now())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.store.MarkUser(ctx, user); err != nil {
-		s.log.Warn("could not record a pre-cache user; it lasts until restart", "user", user, "error", err)
-		return
-	}
-	s.log.Info("pre-cache active for user", "user", user, "mode", s.cfg.PrecacheMode)
-}
-
-func (s *Server) knownUser(user string) bool {
-	_, ok := s.mixUsers.Load(user)
-	return ok
 }

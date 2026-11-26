@@ -47,8 +47,7 @@ func runCache(args []string) int {
 			fmt.Fprintln(os.Stderr, "subslip:", err)
 			return 1
 		}
-		users, _ := store.Users(ctx)
-		out, _ := json.MarshalIndent(map[string]any{"path": cfg.DBPath, "stats": stats, "precacheUsers": users}, "", "  ")
+		out, _ := json.MarshalIndent(map[string]any{"path": cfg.DBPath, "stats": stats}, "", "  ")
 		fmt.Println(string(out))
 	case "purge":
 		n, err := store.Purge(ctx, *expired, cfg.CacheTTL)

@@ -156,17 +156,24 @@ func TestRangeStreamPassesThrough(t *testing.T) {
 	}
 }
 
-func TestPlayPrecachesOnlyAfterFirstInstantMix(t *testing.T) {
+func TestPlayPrecachesEveryUserFromTheFirstPlay(t *testing.T) {
 	h := newHarness(t, 20, nil)
+	h.get(t, "/rest/stream?"+alice+"&id=song1", nil)
+	waitStored(t, h, "alice", "song1")
+	resp, _ := h.get(t, "/rest/getSimilarSongs2?"+alice+"&id=song1&f=json", nil)
+	if !strings.HasPrefix(resp.Header.Get(HeaderOutcome), "hit;") {
+		t.Fatalf("first Instant Mix after a play: %s, want a hit", resp.Header.Get(HeaderOutcome))
+	}
+}
+
+func TestPrecacheOffMeansNoBackgroundCalls(t *testing.T) {
+	h := newHarness(t, 20, map[string]string{"PRECACHE_ON_PLAY": "false"})
 	h.get(t, "/rest/stream?"+alice+"&id=song1", nil)
 	h.srv.Scheduler().Wait()
 	time.Sleep(50 * time.Millisecond)
-	if h.up.count("getSimilarSongs2") != 0 {
-		t.Fatal("auto mode pre-cached a user who never used Instant Mix")
+	if n := h.up.count("getSimilarSongs2"); n != 0 {
+		t.Fatalf("PRECACHE_ON_PLAY=false still made %d upstream calls", n)
 	}
-	h.get(t, "/rest/getSimilarSongs2?"+alice+"&id=seed&f=json", nil)
-	h.get(t, "/rest/stream?"+alice+"&id=song2", nil)
-	waitStored(t, h, "alice", "song2")
 }
 
 func TestShortMixIsNotStoredWithoutSupplement(t *testing.T) {

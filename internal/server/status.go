@@ -50,10 +50,11 @@ type CacheStatus struct {
 	Stats     *cache.Stats `json:"stats,omitempty"`
 }
 
-// PrecacheStatus reports who is pre-cached and since when.
+// PrecacheStatus reports the pre-cache mode and which users are resting
+// after failed builds, with when they resume.
 type PrecacheStatus struct {
-	Mode        string               `json:"mode"`
-	ActiveSince map[string]time.Time `json:"activeSince"`
+	Mode    string               `json:"mode"`
+	Resting map[string]time.Time `json:"resting"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -88,13 +89,9 @@ func (s *Server) StatusDocument(ctx context.Context) StatusDoc {
 		Queues:   s.sched.Snapshot(),
 		Record:   s.rec.Snapshot(),
 		Warnings: s.cfg.Warnings,
-		Precache: PrecacheStatus{Mode: s.cfg.PrecacheMode, ActiveSince: map[string]time.Time{}},
+		Precache: PrecacheStatus{Mode: s.cfg.PrecacheMode, Resting: s.backoff.snapshot()},
 	}
 	doc.Upstream, _ = s.identity.Load().(upstream.Identity)
-	s.mixUsers.Range(func(k, v any) bool {
-		doc.Precache.ActiveSince[k.(string)] = v.(time.Time)
-		return true
-	})
 	if s.store == nil {
 		doc.Cache = CacheStatus{Error: s.storeErr}
 		return doc
@@ -120,6 +117,8 @@ func (s *Server) configSummary() map[string]any {
 		"cacheTTL": c.CacheTTL.String(), "cacheRefresh": c.CacheRefresh.String(),
 		"playDelay": c.PlayDelay.String(), "backgroundGap": c.BackgroundGap.String(),
 		"mixRateLimit": c.MixRateLimit.String(), "listenBrainz": c.ListenBrainzEnabled,
+		"buildTimeout": c.BuildTimeout.String(), "backgroundMaxConcurrent": c.BackgroundMaxConcurrent,
+		"missWait": c.MissWait.String(), "interimBudget": c.InterimBudget.String(),
 		"logLevel": c.LogLevel,
 	}
 }

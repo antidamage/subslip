@@ -1,8 +1,10 @@
 ﻿# SubSlip specification
 
 Produced by ticket 080837 from the plan `instant-mix-plan.md` (workspace root),
-revised by the idea review on that ticket. This file is the authority for
-behaviour; the README describes it for users.
+revised by the idea review on that ticket. Revised for v0.2.0 by ticket 626441
+(pre-cache for every user, a miss that survives the client hanging up, and the
+interim answer). This file is the authority for behaviour; the README
+describes it for users.
 
 ## 1. What SubSlip is
 
@@ -13,15 +15,20 @@ extra handling:
 1. **Playback** (`stream`, `scrobble` with `submission=false`): after proxying,
    schedule a background build of the Instant Mix for that song.
 2. **Instant Mix** (`getSimilarSongs`, `getSimilarSongs2`): answer from the
-   cache when a fresh mix exists; otherwise build one in the foreground.
+   cache when a fresh mix exists. Otherwise, make the upstream call and
+   answer with it. If it is too slow, answer with a short interim list
+   before the client gives up (section 5.3).
 
 The upstream can be **Octo** or **plain Navidrome**, or any Subsonic server
 that implements `getSimilarSongs2` and `search3`. Nothing requires Octo.
 
 ## 2. Hard rule: SubSlip is never the broken link
 
-SubSlip is installed by people who may not use Instant Mix at all. Every
-failure inside SubSlip degrades to plain proxying:
+SubSlip may be installed by people who never use Instant Mix. With the
+default `PRECACHE_ON_PLAY=true`, each song they play still costs one upstream
+Instant Mix call in the background, after the debounce and within the
+concurrency cap (section 4). `PRECACHE_ON_PLAY=false` removes that.
+Every failure inside SubSlip degrades to plain proxying:
 
 | Failure | Behaviour |
 | --- | --- |
@@ -40,7 +47,8 @@ restored).
 
 Every response carries `X-SubSlip: <outcome>`:
 `passthrough`, `hit`, `miss` (answered from SubSlip's own upstream call),
-`busy` (flood protection, proxied), `fallback:<code>` and `auth-failed`.
+`interim` (the upstream was too slow; section 5.3), `busy` (flood
+protection, proxied), `fallback:<code>` and `auth-failed`.
 `<code>` is a fixed word from a short list (`panic`, `cache`, `request`,
 `format`), never an error string, because error strings can carry URLs.
 
@@ -77,7 +85,17 @@ Defaults in brackets; all from environment.
 5. A song with a fresh cached mix is skipped without any outbound call.
 6. Background builds use the captured credentials and have a deadline of
    `BACKGROUND_BUILD_TIMEOUT_SECONDS` [90].
-7. Background pre-caching can be turned off alone with `PRECACHE_ON_PLAY=false`.
+7. `PRECACHE_ON_PLAY` [true] pre-caches every user's plays. `false` turns
+   background pre-caching off on its own. The old value `auto` is read as
+   `true`, with a startup warning.
+8. At most `BACKGROUND_MAX_CONCURRENT` [2] background builds run at once,
+   across all users. Others wait for a free slot, keeping their per-user order.
+9. Backoff: after 3 background builds in a row fail or time out for a user,
+   that user's pre-caching rests for 10 minutes (event
+   `background:resting`). A failing upstream therefore gets no extra load
+   from plays. Taps during that time are cold and rely on section 5.3.
+10. A background build and an Instant Mix request for the same
+   `(user, song)` share one upstream call (section 5.4).
 
 ## 5. Instant Mix requests
 
@@ -88,15 +106,45 @@ Defaults in brackets; all from environment.
    (default 50 per Subsonic) truncates. `f=jsonp` and unknown formats are
    proxied. Mixes are keyed per user, because Navidrome libraries and
    permissions can differ per user; user B never receives user A's entry.
-3. **Miss.** Rule: a miss costs the user no more than calling upstream
-   directly, and SubSlip never issues the client's request twice.
+3. **Miss.** Rule: a miss never makes the user wait longer than calling
+   upstream directly, a slow upstream does not turn into a client timeout, and
+   SubSlip never issues the client's request twice.
    - Any pending debounce for that `(user, song)` is cancelled.
    - SubSlip makes the client's call itself, once: upstream
      `getSimilarSongs2` with the client's `id` and credentials, `f=json`,
      `count` = the larger of the client's count and `MAX_MIX_TRACKS`. That
      answer is the reply, rendered in the client's format, as soon as it
-     arrives. There is no SubSlip timeout on it beyond the client's own
-     connection; a client that disconnects cancels it.
+     arrives.
+   - The call does not run on the client's connection. Its deadline is
+     `BACKGROUND_BUILD_TIMEOUT_SECONDS` [90]. A client that hangs up does not
+     cancel it: the answer is still finished and stored, so the retry is a
+     hit. The event `client-left` records when the client went (seconds after
+     the request) and when the result arrived. It also bumps the
+     `client-left` counter.
+   - **Interim.** If the upstream has not answered after `MISS_WAIT_SECONDS`
+     [22], SubSlip builds an interim list within `INTERIM_BUDGET_SECONDS` [6]
+     using fast library calls:
+     - `getSong` for the seed;
+     - `getTopSongs` for the seed's artist (count 10);
+     - `getRandomSongs` in the seed's genre (size 25).
+
+     Artist tracks and genre tracks are interleaved, artist first. The seed
+     is excluded, duplicates are removed, and the list is capped at
+     `MAX_MIX_TRACKS`. Nothing unrelated is added. With 5 or more tracks it is
+     the reply, carrying `X-SubSlip: interim`. With fewer, or if the budget
+     runs out, nothing is sent and the request keeps waiting on the upstream
+     call.
+     - An interim is never stored and never served as a hit. The upstream
+       call keeps running and its result is stored as usual. A client cannot
+       replace a queue it already has, so the next tap on that seed is the
+       one that gets the real mix.
+     - Counters: `interim` (replies sent) and `interim-then-real` (the real
+       mix was stored after an interim for the same `(user, song)`).
+     - Joiners of one flight share one interim assembly.
+     - `MISS_WAIT_SECONDS=0` turns the interim off.
+     - Reason: SwiftSonic (Minidisc) gives up after 30 s. On 2026-11-27 Octo
+       took 31 s on one seed while its yt-dlp calls to YouTube were timing
+       out. 22 s plus the 6 s budget stays under 30 s.
    - An upstream `status="failed"` answer is passed back as that same Subsonic
      error in the client's format. An upstream HTTP error or network failure is
      answered as the plain proxy would (status code and body, or 502).
@@ -113,15 +161,21 @@ Defaults in brackets; all from environment.
    - The finished mix keeps stage 1's tracks first and in upstream's order;
      the supplement only appends. Two taps on the same seed therefore show the
      same opening tracks.
-   - Worst case, measured on 2026-11-27: Octo cold 1.7-3.5 s, Navidrome
-     (AudioMuse-AI agent) cold 0.13-2.1 s. A SubSlip miss is that plus the
-     render, a few milliseconds.
+   - Measured on 2026-11-27:
+     - Octo cold, normal case: 1.7-3.5 s.
+     - Octo cold, worst seen: 31 s, with YouTube timing out.
+     - Navidrome (AudioMuse-AI agent) cold: 0.13-2.1 s.
+
+     A SubSlip miss is that time plus the render, a few milliseconds.
 4. Flood protection, `MIX_RATE_LIMIT_SECONDS` [10]: no request ever waits on
    SubSlip. While a user's previous Instant Mix call for a different song is
    still in flight, a new one is proxied upstream unchanged (exactly what the
    client would get without SubSlip) and no extra build is started for it.
-   Two requests for the same `(user, song)` share one upstream call. No
-   request is ever answered with an empty list.
+   Requests for the same `(user, song)` share one upstream call. That
+   includes requests made after the first client hung up, and a background
+   build already running for that song. The call asks for the largest count
+   among the requests present when it started. No request is ever answered
+   with an empty list.
 5. `getRandomSongs`, `getAlbumList2` and every other method pass through.
 6. Freshness. A hit on an entry older than `CACHE_REFRESH_HOURS` [6] is served
    and a rebuild for that `(user, song)` is queued in the background slots
@@ -137,16 +191,19 @@ Defaults in brackets; all from environment.
    are not reshuffled, because upstream's order is its similarity ranking.
    A hit carries `X-SubSlip: hit;age=<seconds>`.
 
-### 5.1 Zero cost for people who do not use Instant Mix
+### 5.1 Pre-cache for every user
 
-`PRECACHE_ON_PLAY` [`auto`]: in `auto`, a user's plays are only pre-cached
-after that user has made at least one `getSimilarSongs`/`getSimilarSongs2`
-request through SubSlip (recorded by username in the cache DB). Until then
-SubSlip adds no upstream or outbound call to their traffic. `true` pre-caches
-every user from the start; `false` never does. The flag is persisted in
-`mix_users`, so a restart does not put users back to cold. A user's first
-Instant Mix is therefore always a miss; the README says so, and `doctor` and
-`/subslip/status` show "pre-cache active for <user> since <time>".
+Up to v0.1, `PRECACHE_ON_PLAY=auto` (the old default) pre-cached a user's plays
+only after their first Instant Mix. That made every user's first Instant Mix
+a cold call, which a slow upstream turned into a failure. From v0.2 every
+user is pre-cached from their first play.
+
+`mix_users` is no longer read. An existing database opens unchanged and the
+table is left in place, so a downgrade still works.
+
+The cost is one background upstream call per song played, after the debounce
+and under the cap and backoff (section 4). The README says so on its first
+screen and gives `PRECACHE_ON_PLAY=false` as the opt-out.
 
 ### 5.2 Request shapes accepted
 
@@ -158,6 +215,13 @@ leaves a record. Tests cover the variations clients use: `.view` or not, GET
 query or form POST, `f` missing/`xml`/`json`/`jsonp`, `count` missing or set,
 auth by `u`+`t`+`s`, `u`+`p` (plain and `enc:`), and `apiKey`. Compatibility is
 claimed only as "the same response shapes the upstream produces".
+
+Captured on 2026-11-27, SwiftSonic (Minidisc), and used as a test fixture:
+- `getSimilarSongs`, `f=json`, token auth, `v=1.16.1`;
+- it sends `count=50` and `count=100` for the same seed at the same moment;
+- about 0.5 s later it sends `getSimilarSongs2 count=25` for eight other songs
+  of the result;
+- the client gives up after 30 s.
 
 ## 6. Mix builder
 
@@ -189,6 +253,12 @@ Subsonic song objects (as upstream JSON), seed excluded, deduplicated by id.
       10 s timeout, and at most one request per second.
 3. Upstream songs first, then supplements; cap at `MAX_MIX_TRACKS`.
 4. Zero tracks: nothing is stored and the caller falls back.
+
+SubSlip is a cache in front of the upstream's recommender, not a second
+recommender. Two things add to the upstream's own answer:
+- the supplement above, used only when the upstream's list is short;
+- the interim (section 5.3), used only for a request the upstream has not
+  answered by `MISS_WAIT_SECONDS`. It is never stored.
 
 ## 7. Authentication
 
@@ -235,7 +305,11 @@ Subsonic song objects (as upstream JSON), seed excluded, deduplicated by id.
     says the client is probably still pointed at the upstream. Each check is
     PASS/WARN/FAIL with a hint; exit 1 on any FAIL. `--json` for agents.
     It reads `STATUS_TOKEN` from the same `.env`/environment the service uses
-    and never prints it. It also lists, per user, "pre-cache active since".
+    and never prints it. From the running instance it also reports:
+    - the `interim`, `interim-then-real` and `client-left` counters, with a
+      WARN when interims are more than a fifth of misses, since that means
+      the upstream is slow;
+    - which users are resting under the backoff.
   - `subslip cache stats` and `subslip cache purge [--expired]`.
   - `subslip version`.
 
@@ -253,7 +327,9 @@ Environment variables, optionally from a `.env` file (`--env <path>`, default
 | `DB_PATH` | `./data/instant_mix_cache.db` |
 | `CACHE_TTL_HOURS` / `CACHE_REFRESH_HOURS` | 24 / 6 |
 | `MIN_MIX_TRACKS` / `MAX_MIX_TRACKS` | 15 / 25 |
-| `PRECACHE_ON_PLAY` | auto (`true`, `false`) |
+| `PRECACHE_ON_PLAY` | true (`false`; `auto` is read as `true`) |
+| `BACKGROUND_MAX_CONCURRENT` | 2 |
+| `MISS_WAIT_SECONDS` / `INTERIM_BUDGET_SECONDS` | 22 / 6 (0 turns the interim off) |
 | `MAX_SEARCH_LOOKUPS` / `SUPPLEMENT_DEADLINE_SECONDS` | 20 / 20 |
 | `FETCH_ON_PLAY_DELAY_SECONDS` | 10 |
 | `REMOTE_STATION_API_QUERY_RATE_LIMIT_SECONDS` | 10 |
@@ -273,8 +349,9 @@ SQLite via `modernc.org/sqlite` (CGO off). `journal_mode=WAL`,
 `busy_timeout=5000`. Table `mixes(song_id TEXT PRIMARY KEY, songs_json TEXT,
 source TEXT, track_count INT, built_at INT, build_ms INT)` holds the upstream
 song objects verbatim (all OpenSubsonic fields kept) and re-wraps them per
-request. Table `mix_users(username TEXT PRIMARY KEY, first_seen INT)` drives
-`PRECACHE_ON_PLAY=auto`. No credential is ever stored. SubSlip only ever
+request. Table `mix_users(username TEXT PRIMARY KEY, first_seen INT)` was
+written for `PRECACHE_ON_PLAY=auto` up to v0.1. It is created if missing but
+no longer read or written. No credential is ever stored. SubSlip only ever
 opens its own DB file; it never touches the upstream's database or music.
 
 ## 11. Repository and distribution
@@ -339,7 +416,9 @@ so a user can paste it into an issue.
 What is fast: an Instant Mix started from the song that is playing (pre-cached
 while it plays), and any seed requested before within the TTL. An Instant Mix
 on some other song is as fast as the upstream, and the next one on that song
-is a hit. The README says this, and does not describe client behaviour as
+is a hit. If the upstream takes longer than `MISS_WAIT_SECONDS`, the first tap
+gets a short interim list (the seed artist and genre) instead of a timeout,
+and the next tap gets the real mix. The README says this, and does not describe client behaviour as
 "automatic". A user whose upstream already answers quickly gains little and
 can run `SUBSLIP_MODE=passthrough`.
 

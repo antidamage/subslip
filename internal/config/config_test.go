@@ -13,7 +13,7 @@ func TestDefaults(t *testing.T) {
 	if cfg.UpstreamURL.String() != "http://127.0.0.1:4533" || cfg.ListenAddr != "0.0.0.0:5276" {
 		t.Fatalf("unexpected defaults: %s %s", cfg.UpstreamURL, cfg.ListenAddr)
 	}
-	if !cfg.RequireAuth || cfg.PrecacheMode != "auto" || cfg.CacheTTL != 24*time.Hour || cfg.MinMixTracks != 15 {
+	if !cfg.RequireAuth || cfg.PrecacheMode != "true" || cfg.MissWait != 22*time.Second || cfg.InterimBudget != 6*time.Second || cfg.BackgroundMaxConcurrent != 2 || cfg.CacheTTL != 24*time.Hour || cfg.MinMixTracks != 15 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if len(cfg.Warnings) != 0 {
@@ -73,5 +73,20 @@ func TestBadUpstreamWarningHidesValue(t *testing.T) {
 				t.Fatalf("warning echoes the password: %q", w)
 			}
 		}
+	}
+}
+
+// TestPrecacheAutoReadAsTrue: v0.1's default "auto" must not stop pre-caching
+// after an upgrade; it is read as true, with a warning.
+func TestPrecacheAutoReadAsTrue(t *testing.T) {
+	cfg := FromMap(map[string]string{"PRECACHE_ON_PLAY": "auto", "MISS_WAIT_SECONDS": "0.5"})
+	if cfg.PrecacheMode != "true" || len(cfg.Warnings) != 1 {
+		t.Fatalf("auto: mode %q warnings %v", cfg.PrecacheMode, cfg.Warnings)
+	}
+	if cfg.MissWait != 500*time.Millisecond {
+		t.Fatalf("fractional MISS_WAIT_SECONDS: %v", cfg.MissWait)
+	}
+	if off := FromMap(map[string]string{"PRECACHE_ON_PLAY": "false", "MISS_WAIT_SECONDS": "0"}); off.PrecacheMode != "false" || off.MissWait != 0 {
+		t.Fatalf("opt-outs: %q %v", off.PrecacheMode, off.MissWait)
 	}
 }

@@ -131,9 +131,11 @@ Tell the user, in this order:
    `doctor`, with the same username and password as before.
 2. Keep the old server address saved in the client. If SubSlip is ever down,
    switch back to it.
-3. The first Instant Mix per user goes to the server as before. After that,
-   SubSlip pre-builds the mix of each song they play, so an Instant Mix from
-   the playing song comes back straight from the cache.
+3. SubSlip pre-builds the mix of each song they play, so an Instant Mix from
+   the playing song comes back straight from the cache. An Instant Mix on
+   another song goes to the server. If the server takes longer than 22
+   seconds, they get a short interim list (same artist and genre), and the
+   real mix next time.
 
 After they have used a client through SubSlip, run `doctor` again: the
 `client seen` lines confirm their client is going through it, with the request
@@ -145,7 +147,9 @@ shape it uses.
 | --- | --- | --- |
 | Client cannot connect | `curl http://<host>:5276/subslip/health` | Service not running, firewall, wrong port |
 | Everything fails, not just Instant Mix | `SUBSLIP_MODE=passthrough`, restart, retry | If it still fails, the upstream URL is wrong |
-| Instant Mix never fast | Response header `X-SubSlip` | `miss` every time: pre-cache not active for the user yet (see `doctor` pre-cache lines) or `PRECACHE_ON_PLAY=false` |
+| Instant Mix never fast | Response header `X-SubSlip` | `miss` every time: `PRECACHE_ON_PLAY=false`, or the user is resting after failed builds (`doctor` pre-cache lines) |
+| Instant Mix shows a short list of one artist | `X-SubSlip: interim`, `doctor` slow-upstream lines | The server took longer than `MISS_WAIT_SECONDS`; the real mix comes next time. Check the server's own logs for why it is slow |
+| Client says it cannot build the mix | status `recentEvents` `client-left` | The client gave up before the server answered; the mix was still stored. Lower `MISS_WAIT_SECONDS` below the client's timeout |
 | Instant Mix empty | `doctor`, status `recentEvents` | Upstream returns nothing and the supplement found nothing; the event says why |
 | `auth-failed` | the client's login | Wrong credentials at the upstream; SubSlip passes its error through |
 | `fallback:<code>` | logs at `LOG_LEVEL=debug` | SubSlip gave up and proxied; the request still worked |

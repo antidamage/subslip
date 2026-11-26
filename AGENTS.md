@@ -25,7 +25,9 @@ writes its own cache file at `DB_PATH`.
   the request being proxied to the upstream, not in an error the upstream would
   not have produced. Spec section 2 lists the cases. New code follows it.
 - **No request waits on SubSlip.** A cache miss makes the client's own call
-  once and replies with it; extra work happens in the background.
+  once, detached from the client's connection, and replies with it. If the
+  upstream is slower than `MISS_WAIT_SECONDS`, a short related interim is
+  sent instead, and it is never cached. Extra work happens in the background.
 - **Credentials are never logged, stored or shown.** Use `internal/redact` for
   anything that might contain a URL. `internal/server/redaction_test.go`
   pushes a known password through every path; keep it passing.

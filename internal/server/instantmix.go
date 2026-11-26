@@ -1,13 +1,15 @@
 // instantmix.go answers getSimilarSongs and getSimilarSongs2.
 //
-// Works with: flights.go (one upstream call per song, flood rule),
-// playhook.go (backgroundJob, used to finish and refresh mixes),
-// internal/mix (Stage1, Finish), internal/cache, internal/auth.
+// Works with: miss.go (answerMiss: the upstream call, interim, client-left),
+// flights.go (one upstream call per song, flood rule), playhook.go
+// (backgroundJob, used to finish and refresh mixes), internal/mix (Stage1,
+// Finish), internal/cache, internal/auth.
 //
 // Flow (spec section 5): auth gate, then a fresh cached mix is a hit; a miss
-// makes the client's own call once and replies with it, then finishes the mix
-// in the background. No request waits on SubSlip, and no request is answered
-// with an empty list that the upstream did not send.
+// makes the client's call once (detached from the client) and replies with
+// it, or with a short interim when the upstream is slower than
+// MISS_WAIT_SECONDS; the mix is finished and stored in the background. No
+// request is answered with an empty list that the upstream did not send.
 package server
 
 import (
@@ -23,9 +25,6 @@ import (
 	"github.com/antidamage/subslip/internal/subsonic"
 	"github.com/antidamage/subslip/internal/upstream"
 )
-
-// testHookStage1, when set by a test, runs inside the shared upstream call.
-var testHookStage1 func()
 
 // defaultCount is the Subsonic default for getSimilarSongs(2).
 const defaultCount = 50
@@ -50,7 +49,6 @@ func (s *Server) instantMix(w http.ResponseWriter, r *http.Request, req *subsoni
 	if s.cfg.RequireAuth && !s.authorise(w, r, req, format) {
 		return
 	}
-	s.markUser(user)
 	s.sched.CancelDebounce(user, id)
 	count := parseCount(req.Params.Get("count"))
 
@@ -63,26 +61,7 @@ func (s *Server) instantMix(w http.ResponseWriter, r *http.Request, req *subsoni
 		return
 	}
 	defer s.flights.end(user)
-	stage1, leader, err := s.flights.do(r.Context(), user, id, func() (*mix.Stage1Result, error) {
-		if testHookStage1 != nil {
-			testHookStage1()
-		}
-		return s.builder.Stage1(r.Context(), req.Auth, req.Method, id, count)
-	})
-	if err != nil {
-		s.answerStage1Error(w, r, format, user, id, err)
-		return
-	}
-	s.meta.Store(stage1.Meta)
-	w.Header().Set(HeaderOutcome, "miss")
-	s.rec.Count("miss")
-	s.rec.Record("miss", user, id, fmt.Sprintf("upstream %d tracks in %d ms", len(stage1.Songs), stage1.Took.Milliseconds()))
-	if err := subsonic.WriteSongs(w, format, stage1.Meta, subsonic.ElementFor(req.Method), truncate(stage1.Songs, count)); err != nil {
-		s.log.Debug("writing miss response failed", "error", err)
-	}
-	if leader {
-		go s.finishAfterMiss(user, id, req.Auth, stage1) // followers share the leader's finish
-	}
+	s.answerMiss(w, r, req, format, user, id, count)
 }
 
 // authorise runs the auth gate. It returns false when it has already answered.
@@ -132,7 +111,7 @@ func (s *Server) serveHit(w http.ResponseWriter, r *http.Request, req *subsonic.
 // left nothing to pass back (a non-JSON 200) is retried as a plain proxy.
 func (s *Server) answerStage1Error(w http.ResponseWriter, r *http.Request, format, user, id string, err error) {
 	if r.Context().Err() != nil {
-		return // the client went away
+		return // the client went away; clientLeft is not reached on this path
 	}
 	s.rec.Record("upstream-error", user, id, err.Error())
 	var failed *upstream.FailedError
@@ -142,7 +121,7 @@ func (s *Server) answerStage1Error(w http.ResponseWriter, r *http.Request, forma
 		// The request this one shared a call with panicked; ask upstream directly.
 		s.fallback(w, r, "panic")
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-		// The request this one was sharing a call with went away first.
+		// The shared call ran past BACKGROUND_BUILD_TIMEOUT_SECONDS.
 		s.fallback(w, r, "request")
 	case errors.As(err, &failed):
 		w.Header().Set(HeaderOutcome, "upstream-error")

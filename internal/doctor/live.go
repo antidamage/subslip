@@ -61,14 +61,16 @@ func (d *run) checkStatus(ctx context.Context, client *http.Client, base string)
 	var doc struct {
 		Mode   string `json:"mode"`
 		Record struct {
-			Clients []struct {
+			Counters map[string]int64 `json:"counters"`
+			Clients  []struct {
 				Name       string `json:"name"`
 				Requests   int64  `json:"requests"`
 				FirstShape string `json:"firstInstantMixShape"`
 			} `json:"clientsSeen"`
 		} `json:"record"`
 		Precache struct {
-			ActiveSince map[string]time.Time `json:"activeSince"`
+			Mode    string               `json:"mode"`
+			Resting map[string]time.Time `json:"resting"`
 		} `json:"precache"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -88,7 +90,22 @@ func (d *run) checkStatus(ctx context.Context, client *http.Client, base string)
 		d.add(Warn, "clients", "no client has sent requests through SubSlip since it started",
 			"Your client is probably still pointed at the upstream. Change its server address to the client URL below.")
 	}
-	for user, since := range doc.Precache.ActiveSince {
-		d.add(Info, "pre-cache", fmt.Sprintf("active for %s since %s", url.PathEscape(user), since.Format(time.RFC3339)), "")
+	d.add(Info, "pre-cache", "mode="+doc.Precache.Mode, "")
+	for user, until := range doc.Precache.Resting {
+		d.add(Warn, "pre-cache", fmt.Sprintf("resting for %s until %s after failed builds", url.PathEscape(user), until.Format(time.RFC3339)),
+			"The upstream failed three background builds in a row for this user. Check the upstream's own logs.")
+	}
+	d.slowUpstream(doc.Record.Counters)
+}
+
+// slowUpstream reports the interim and client-left counters. Interims on more
+// than a fifth of misses mean the upstream is slow, not SubSlip.
+func (d *run) slowUpstream(c map[string]int64) {
+	interim, misses, left := c["interim"], c["miss"]+c["interim"], c["client-left"]
+	d.add(Info, "slow upstream", fmt.Sprintf("interim %d, interim-then-real %d, client-left %d, of %d misses",
+		interim, c["interim-then-real"], left, misses), "")
+	if misses > 0 && interim*5 > misses {
+		d.add(Warn, "slow upstream", fmt.Sprintf("%d of %d misses needed an interim", interim, misses),
+			"The upstream often takes longer than MISS_WAIT_SECONDS. MISS_WAIT_SECONDS=0 turns interims off.")
 	}
 }
