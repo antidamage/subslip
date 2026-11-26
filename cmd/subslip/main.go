@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,7 +62,10 @@ else .env next to the binary. See .env.example.
 func main() {
 	args := os.Args[1:]
 	command := "serve"
-	if len(args) > 0 && args[0] != "" && args[0][0] != '-' {
+	switch {
+	case len(args) > 0 && (args[0] == "--version" || args[0] == "-version" || args[0] == "-h" || args[0] == "--help"):
+		command, args = strings.TrimLeft(args[0], "-"), args[1:]
+	case len(args) > 0 && args[0] != "" && args[0][0] != '-':
 		command, args = args[0], args[1:]
 	}
 	var code int
@@ -74,9 +78,9 @@ func main() {
 		code = runDoctor(args)
 	case "cache":
 		code = runCache(args)
-	case "version", "--version":
+	case "version":
 		fmt.Println(version)
-	case "help", "-h", "--help":
+	case "help", "h":
 		fmt.Printf(usage, version)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", command)
