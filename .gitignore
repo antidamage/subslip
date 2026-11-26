@@ -1,0 +1,13 @@
+# Local settings and state
+.env
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# Build output
+/subslip
+/subslip.exe
+*.exe
+dist/
