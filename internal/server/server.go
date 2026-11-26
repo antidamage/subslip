@@ -188,6 +188,11 @@ func (s *Server) stripBasePath(r *http.Request) {
 }
 
 func (s *Server) refreshIdentity(ctx context.Context) {
+	defer func() {
+		if recover() != nil {
+			s.log.Error("recovered from a panic while identifying the upstream")
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	id := s.up.Detect(ctx)

@@ -1,0 +1,37 @@
+# SubSlip next to an existing Octo or Navidrome container.
+#
+# Copy this into your own compose file (or run it alongside with
+# `docker compose -f docker-compose.example.yml up -d`), set UPSTREAM_URL to
+# your server as the SubSlip container sees it, and point your Subsonic client
+# at port 5276. Keep your server's own port published as the fallback.
+#
+# The image is built straight from the repository; no registry is needed.
+
+services:
+  subslip:
+    build:
+      context: https://github.com/antidamage/subslip.git#main
+      args:
+        VERSION: main
+    container_name: subslip
+    restart: unless-stopped
+    ports:
+      - "5276:5276"
+    environment:
+      # Same compose network: use the service name and its internal port.
+      #   Octo:      http://octo:5274
+      #   Navidrome: http://navidrome:4533   (add the BaseUrl path if you set one)
+      # Server on the Docker host instead: http://host.docker.internal:4533
+      UPSTREAM_URL: http://navidrome:4533
+      # Empty disables /subslip/status. To enable it, set a long random string
+      # of your own (for example from `openssl rand -hex 24`); never a shared one.
+      STATUS_TOKEN: ""
+      REQUIRE_AUTH: "true"
+      LOG_LEVEL: info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - subslip-data:/data
+
+volumes:
+  subslip-data:

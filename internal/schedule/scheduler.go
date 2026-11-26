@@ -165,6 +165,7 @@ func (st *userState) idle() bool {
 }
 
 func (s *Scheduler) debounceFired(user, song string) {
+	defer s.recoverTimer(user, song)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.users[user]
@@ -235,6 +236,7 @@ func (s *Scheduler) finished(user string) {
 }
 
 func (s *Scheduler) promote(user string) {
+	defer s.recoverTimer(user, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.users[user]
@@ -248,4 +250,12 @@ func (s *Scheduler) promote(user string) {
 	q := st.pending
 	st.pending = nil
 	s.startLocked(user, st, q)
+}
+
+// recoverTimer keeps a panic in a timer callback from stopping the process.
+// It runs after the deferred Unlock, so the lock is already released.
+func (s *Scheduler) recoverTimer(user, song string) {
+	if recover() != nil {
+		s.event(user, song, "panicked")
+	}
 }

@@ -285,12 +285,30 @@ opens its own DB file; it never touches the upstream's database or music.
 - Tests: unit tests per package plus an end-to-end test against a fake
   upstream (`httptest`) covering hit, miss, fallback, auth failure, Range
   pass-through and the debounce/slot rules (with injected clocks).
-- Distribution: GitHub release archives for linux, darwin, windows on amd64
-  and arm64; `install/install.sh` (Linux systemd or macOS launchd) and
-  `install/install.ps1` (Windows scheduled task, hidden) that download the
-  release, write `.env` without overwriting an existing one, start the service
-  and run `doctor`; multi-stage `Dockerfile` (static binary, CA certs) and
-  `docker-compose.example.yml`.
+- Distribution: GitHub releases built by the owner's release tooling, with
+  fixed asset names that the install scripts fetch:
+  `subslip_<v>_windows_<386|amd64|arm64>.zip`,
+  `subslip_<v>_linux_<386|amd64|arm64|armv7>.tar.gz`, `.deb`, `.rpm`, `.apk`
+  and Arch packages, and `SHA256SUMS`. Archives hold the binary, LICENSE and
+  README; packages install `/usr/bin/subslip` and no service files. There are
+  no macOS builds: macOS installs with `go install`.
+- `subslip init [--env FILE] [--upstream URL] [--listen ADDR] [--force]`
+  writes a starting `.env` from the embedded `.env.example`. With no
+  `--upstream` it tries `http://127.0.0.1:5274` (Octo), then `:4533`,
+  `:4533/navidrome` and `:4533/music` (Navidrome), and takes the first that
+  answers like a Subsonic server. It sets `UPSTREAM_URL`, `LISTEN_ADDR` and a
+  random `STATUS_TOKEN`, never writes credentials, never replaces an existing
+  file without `--force`, and writes nothing when the upstream does not answer.
+- `install/install.sh` (Linux: release archive, checksum checked, systemd
+  service, system-wide as root or per user otherwise; macOS: `go install` and
+  a launchd agent) and `install/install.ps1` (Windows: release zip, checksum
+  checked, a scheduled task at logon run through `conhost --headless` so no
+  window opens, re-started every five minutes if it stopped). Both keep an
+  existing `.env`, call `subslip init` otherwise, start the service and run
+  `doctor`. Re-running either upgrades the binary.
+- Multi-stage `Dockerfile` (static binary on Alpine with CA certificates,
+  non-root user, `/data` volume, health check) and
+  `docker-compose.example.yml` that builds from the repository.
 - Agent files: `AGENTS.md` (entry point) and `AGENT_SETUP.md` (runbook). No
   tool-specific instruction files.
 - README: what it is, how it fits, install by agent / script / Docker / source,

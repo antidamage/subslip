@@ -2,6 +2,7 @@
 //
 // File map:
 //   - main.go    (this file) command dispatch and `serve`.
+//   - init.go    `subslip init`, which writes a starting .env.
 //   - cache.go   `subslip cache stats|purge`.
 //   - doctor.go  `subslip doctor`, a thin wrapper over internal/doctor.
 //
@@ -19,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -29,12 +31,24 @@ import (
 )
 
 // version is set at build time with -ldflags "-X main.version=v0.1.0".
+// A `go install ...@v0.1.0` build has no ldflags, so init falls back to the
+// module version Go records in the binary.
 var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 const usage = `SubSlip %s: a Subsonic reverse proxy that pre-caches Instant Mixes.
 
 Usage:
   subslip [serve] [--env FILE]     run the proxy (default)
+  subslip init [--env FILE] [--upstream URL] [--listen ADDR] [--force]
   subslip doctor [--env FILE] [--user U --password P] [--json]
   subslip cache stats [--env FILE]
   subslip cache purge [--expired] [--env FILE]
@@ -54,6 +68,8 @@ func main() {
 	switch command {
 	case "serve":
 		code = runServe(args)
+	case "init":
+		code = runInit(args)
 	case "doctor":
 		code = runDoctor(args)
 	case "cache":

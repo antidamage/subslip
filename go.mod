@@ -1,6 +1,6 @@
 module github.com/antidamage/subslip
 
-go 1.27.4
+go 1.26.0
 
 require modernc.org/sqlite v1.63.0
 
