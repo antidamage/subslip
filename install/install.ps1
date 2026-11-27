@@ -28,14 +28,21 @@ $Repo = 'antidamage/subslip'
 $TaskName = 'SubSlip'
 function Say([string]$m) { Write-Output "subslip-install: $m" }
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
-    'AMD64' { 'amd64' } 'ARM64' { 'arm64' } 'x86' { '386' }
-    default { throw "no release build for $env:PROCESSOR_ARCHITECTURE" }
+# A 32-bit PowerShell on 64-bit Windows reports x86 here and the real CPU in
+# PROCESSOR_ARCHITEW6432.
+$cpu = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($cpu) {
+    'AMD64' { 'amd64' } 'ARM64' { 'arm64' }
+    'x86' { '386' }   # only 0.1.0-0.2.1 have it; checked below
+    default { throw "no release build for $cpu" }
 }
 if ($Version -eq 'latest') {
     $Version = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing).tag_name
 }
 $Version = $Version.TrimStart('v')
+if ($arch -eq '386' -and @('0.1.0', '0.2.0', '0.2.1') -notcontains $Version) {
+    throw "32-bit Windows is not supported after 0.2.1; run with -Version 0.2.1 for the last 32-bit build"
+}
 $asset = "subslip_${Version}_windows_$arch.zip"
 $base = "https://github.com/$Repo/releases/download/v$Version"
 

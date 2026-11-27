@@ -105,8 +105,10 @@ for the shell script, `-Upstream http://host:4533` on Windows. Re-running
 either one upgrades the binary and keeps your settings.
 
 Release packages for Linux (`.deb`, `.rpm`, `.apk`, Arch) and Windows zips are
-on the [releases page](https://github.com/antidamage/subslip/releases). The
-packages install only the binary; run `subslip init` to write settings.
+on the [releases page](https://github.com/antidamage/subslip/releases), for x64
+and ARM64, plus ARM 32-bit on Linux. The packages install only the binary; run
+`subslip init` to write settings. What changed in each version is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ### With Docker
 

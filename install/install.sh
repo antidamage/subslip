@@ -41,7 +41,7 @@ install_linux_binary() {
     x86_64|amd64) ARCH=amd64 ;;
     aarch64|arm64) ARCH=arm64 ;;
     armv7l|armv7*) ARCH=armv7 ;;
-    i386|i686) ARCH=386 ;;
+    i386|i486|i586|i686) ARCH=386 ;;  # only 0.1.0-0.2.1 have it; checked below
     *) die "no release build for $(uname -m); build from source instead (see README)" ;;
   esac
   if [ "$VERSION" = latest ]; then
@@ -49,6 +49,12 @@ install_linux_binary() {
     [ -n "$VERSION" ] || die "could not find the latest release"
   fi
   VERSION="${VERSION#v}"
+  if [ "$ARCH" = 386 ]; then
+    case "$VERSION" in
+      0.1.0|0.2.0|0.2.1) ;;
+      *) die "32-bit x86 Linux is not supported after 0.2.1; set SUBSLIP_VERSION=0.2.1 for the last 32-bit build" ;;
+    esac
+  fi
   ASSET="subslip_${VERSION}_linux_${ARCH}.tar.gz"
   BASE="https://github.com/$REPO/releases/download/v$VERSION"
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT

@@ -1,4 +1,4 @@
-﻿# SubSlip specification
+# SubSlip specification
 
 Produced by ticket 080837 from the plan `instant-mix-plan.md` (workspace root),
 revised by the idea review on that ticket. Revised for v0.2.0 by ticket 626441
@@ -406,11 +406,20 @@ opens its own DB file; it never touches the upstream's database or music.
   pass-through and the debounce/slot rules (with injected clocks).
 - Distribution: GitHub releases built by the owner's release tooling, with
   fixed asset names that the install scripts fetch:
-  `subslip_<v>_windows_<386|amd64|arm64>.zip`,
-  `subslip_<v>_linux_<386|amd64|arm64|armv7>.tar.gz`, `.deb`, `.rpm`, `.apk`
+  `subslip_<v>_windows_<amd64|arm64>.zip`,
+  `subslip_<v>_linux_<amd64|arm64|armv7>.tar.gz`, `.deb`, `.rpm`, `.apk`
   and Arch packages, and `SHA256SUMS`. Archives hold the binary, LICENSE and
   README; packages install `/usr/bin/subslip` and no service files. There are
-  no macOS builds: macOS installs with `go install`.
+  no macOS builds: macOS installs with `go install`. No Android builds.
+- Platforms: x86 is 64-bit only (`amd64`, labelled x64 in the notes). The
+  one 32-bit build is Linux `armv7`, for Raspberry Pi boards on a 32-bit OS.
+  Releases 0.1.0 to 0.2.1 also carry `386` builds for Windows and Linux;
+  later releases do not. The install scripts take the 64-bit build under a
+  32-bit PowerShell on 64-bit Windows, and refuse 32-bit x86 unless the
+  version asked for is one of those that has it.
+- `CHANGELOG.md` (Keep a Changelog layout) has a section per version, and a
+  release's notes open with that section, followed by the downloads table.
+  New entries go under `## [Unreleased]` with the change that makes them.
 - `subslip init [--env FILE] [--upstream URL] [--listen ADDR] [--force]`
   writes a starting `.env` from the embedded `.env.example`. With no
   `--upstream` it tries `http://127.0.0.1:5274` (Octo), then `:4533`,
