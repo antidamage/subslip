@@ -5,11 +5,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-27
+
+No change to how SubSlip works; this release changes what is built.
+
 ### Changed
 
 - Release builds are 64-bit only on x86: Windows x64 and ARM64, and Linux
   x64, ARM64 and ARM 32-bit (armv7, for Raspberry Pi on a 32-bit OS).
-  32-bit x86 (386) builds are no longer made. 0.1.0 to 0.2.1 still have them.
+  32-bit x86 (386) builds are no longer made; 0.1.0 to 0.2.1 still have them.
 - The install scripts refuse 32-bit x86 with a clear message. On Windows, a
   32-bit PowerShell on 64-bit Windows now installs the 64-bit build.
 
@@ -90,7 +94,8 @@ First release.
   arm64, armv7) as zip, tar.gz, `.deb`, `.rpm`, `.apk` and Arch packages,
   with `SHA256SUMS`.
 
-[Unreleased]: https://github.com/antidamage/subslip/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/antidamage/subslip/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/antidamage/subslip/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/antidamage/subslip/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/antidamage/subslip/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/antidamage/subslip/releases/tag/v0.1.0
