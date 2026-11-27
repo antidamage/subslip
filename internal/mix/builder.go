@@ -115,6 +115,12 @@ func (b *Builder) Finish(ctx context.Context, auth subsonic.Auth, id string, sta
 	return result
 }
 
+// Tidy applies the rules every stored list follows (section 6): seed left out,
+// duplicates removed, at most max tracks.
+func Tidy(songs []subsonic.Song, seed string, max int) []subsonic.Song {
+	return capSongs(dedupe(withoutSeed(songs, seed)), max)
+}
+
 func withoutSeed(songs []subsonic.Song, seed string) []subsonic.Song {
 	out := make([]subsonic.Song, 0, len(songs))
 	for _, s := range songs {

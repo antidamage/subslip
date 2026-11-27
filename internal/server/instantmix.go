@@ -1,6 +1,7 @@
 // instantmix.go answers getSimilarSongs and getSimilarSongs2.
 //
 // Works with: miss.go (answerMiss: the upstream call, interim, client-left),
+// busy.go (answerBusy: the flood rule's pass-through, copied and stored),
 // flights.go (one upstream call per song, flood rule), playhook.go
 // (backgroundJob, used to finish and refresh mixes), internal/mix (Stage1,
 // Finish), internal/cache, internal/auth.
@@ -57,7 +58,7 @@ func (s *Server) instantMix(w http.ResponseWriter, r *http.Request, req *subsoni
 	}
 	if !s.flights.begin(user, id) {
 		s.rec.Record("busy", user, id, "")
-		s.passthrough(w, r, "busy")
+		s.answerBusy(w, r, req, format, user, id, count)
 		return
 	}
 	defer s.flights.end(user)
@@ -95,6 +96,9 @@ func (s *Server) serveHit(w http.ResponseWriter, r *http.Request, req *subsonic.
 	age := entry.Age(s.now())
 	if age >= s.cfg.CacheTTL {
 		return false
+	}
+	if entry.Source == busySource {
+		s.rec.Count("busy-stored-then-hit")
 	}
 	w.Header().Set(HeaderOutcome, "hit;age="+strconv.Itoa(int(age.Seconds())))
 	s.rec.Count("hit")
@@ -157,15 +161,26 @@ func (s *Server) finishAfterMiss(user, id string, a subsonic.Auth, stage1 *mix.S
 			s.rec.Record("panic", user, id, "finishing a mix")
 		}
 	}()
+	finish := func(ctx context.Context) {
+		result := s.builder.Finish(ctx, a, id, stage1)
+		s.storeResult(ctx, user, id, result)
+		if len(result.Songs) == 0 {
+			s.afterEmpty(user, id, a)
+		}
+	}
 	if len(stage1.Songs) >= s.cfg.MinMixTracks || s.builder.LB == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.BuildTimeout)
 		defer cancel()
-		s.storeResult(ctx, user, id, s.builder.Finish(ctx, a, id, stage1))
+		finish(ctx)
 		return
 	}
-	s.sched.Enqueue(user, id, func(ctx context.Context) {
-		s.storeResult(ctx, user, id, s.builder.Finish(ctx, a, id, stage1))
-	})
+	if !s.sched.Enqueue(user, id, finish) {
+		// That song's build is already active for this user (a background job
+		// waiting on this very flight), so finish here rather than lose it.
+		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.BuildTimeout)
+		defer cancel()
+		finish(ctx)
+	}
 }
 
 // lastMeta is the envelope of the most recent upstream answer, so SubSlip's

@@ -37,6 +37,8 @@ type Config struct {
 	// answer is built; 0 turns the interim off. InterimBudget bounds that build.
 	MissWait      time.Duration
 	InterimBudget time.Duration
+	// EmptyRetry is how long after an empty build the one retry runs; 0 off.
+	EmptyRetry time.Duration
 
 	MaxSearchLookups   int
 	SupplementDeadline time.Duration
@@ -101,6 +103,7 @@ func FromMap(values map[string]string) *Config {
 		BackgroundMaxConcurrent: r.integer("BACKGROUND_MAX_CONCURRENT", 2),
 		MissWait:                r.fractionalSeconds("MISS_WAIT_SECONDS", 22),
 		InterimBudget:           r.fractionalSeconds("INTERIM_BUDGET_SECONDS", 6),
+		EmptyRetry:              r.fractionalSeconds("EMPTY_RETRY_SECONDS", 10),
 		MaxSearchLookups:        r.integer("MAX_SEARCH_LOOKUPS", 20),
 		SupplementDeadline:      r.seconds("SUPPLEMENT_DEADLINE_SECONDS", 20),
 		RequireAuth:             r.boolean("REQUIRE_AUTH", true),

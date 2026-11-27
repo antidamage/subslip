@@ -153,6 +153,19 @@ func decodeEnvelope(body []byte) (map[string]any, error) {
 	return inner, nil
 }
 
+// Decode reads a raw Subsonic JSON answer the way Call does: the inner
+// envelope, or a *FailedError when its status is not ok, or a decode error.
+func Decode(body []byte) (map[string]any, error) {
+	envelope, err := decodeEnvelope(body)
+	if err != nil {
+		return nil, err
+	}
+	if status, _ := envelope["status"].(string); status != "ok" {
+		return nil, failedFrom(envelope)
+	}
+	return envelope, nil
+}
+
 func failedFrom(envelope map[string]any) *FailedError {
 	failed := &FailedError{Code: 0, Message: "unknown error"}
 	if e, ok := envelope["error"].(map[string]any); ok {

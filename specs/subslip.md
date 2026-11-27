@@ -48,7 +48,8 @@ restored).
 Every response carries `X-SubSlip: <outcome>`:
 `passthrough`, `hit`, `miss` (answered from SubSlip's own upstream call),
 `interim` (the upstream was too slow; section 5.3), `busy` (flood
-protection, proxied), `fallback:<code>` and `auth-failed`.
+protection: proxied unchanged, and stored when it qualifies; section 5.4),
+`fallback:<code>` and `auth-failed`.
 `<code>` is a fixed word from a short list (`panic`, `cache`, `request`,
 `format`), never an error string, because error strings can carry URLs.
 
@@ -96,6 +97,23 @@ Defaults in brackets; all from environment.
    from plays. Taps during that time are cold and rely on section 5.3.
 10. A background build and an Instant Mix request for the same
    `(user, song)` share one upstream call (section 5.4).
+11. Empty retry, `EMPTY_RETRY_SECONDS` [10] (0 turns it off). When a build
+   ends with no tracks, one more build runs for that `(user, song)` this long
+   later, through the slots and cap. The build can be a background one or the
+   finish after a miss.
+   - It is skipped while the user is resting (item 9), and when a fresh mix
+     exists by then.
+   - It runs at most once per song per hour. It never retries itself and
+     never counts toward the backoff.
+   - It does not change what the request that got the empty answer saw. It
+     only helps a later tap.
+   - Counters: `empty-retry` and `empty-retry-filled`. When at least 50
+     retries have run and fewer than 1 in 10 filled, `doctor` WARNs and the
+     retry should be removed or turned off.
+   - Reason: on 2026-11-27, Octo answered a seed with 0 tracks, then 50 four
+     seconds later. Its YouTube seed search is not cached when the yt-dlp shim
+     fails, and the response itself cannot tell that apart from a seed with
+     nothing similar.
 
 ## 5. Instant Mix requests
 
@@ -173,7 +191,28 @@ Defaults in brackets; all from environment.
    client would get without SubSlip) and no extra build is started for it.
    Requests for the same `(user, song)` share one upstream call. That
    includes requests made after the first client hung up, and a background
-   build already running for that song. The call asks for the largest count
+   build already running for that song. A flight stays joinable until its
+   result is stored, or handed to the background slots for the supplement.
+   A request that arrives after the upstream answered, but before the store,
+   gets that answer, not a second upstream call.
+   - **Busy answers are stored.** The request the flood rule turns away is
+     still proxied byte for byte, with the outcome `busy`. SubSlip copies the
+     answer as it streams past (at most 2 MB). After the client has it,
+     SubSlip stores the copy only when all of these hold:
+     - it was HTTP 200 and a Subsonic ok answer in JSON;
+     - the client's `count` was at least `MAX_MIX_TRACKS`;
+     - at least `MIN_MIX_TRACKS` tracks remain after seed exclusion and
+       dedupe;
+     - no fresh entry exists for that `(user, song)`.
+
+     A busy copy never overwrites. It is stored with source `upstream-busy`.
+     Errors, non-200, XML, other encodings and oversized bodies are relayed
+     unchanged and not stored.
+   - Each busy request is a real upstream call that the client made anyway,
+     so storing it adds no upstream call. Counters: `busy-stored`,
+     `busy-skipped`, and `busy-stored-then-hit` (a hit on an entry stored
+     this way). SwiftSonic sends `getSimilarSongs2 f=json count=25` for eight
+     songs of each mix, and those qualify. The call asks for the largest count
    among the requests present when it started. No request is ever answered
    with an empty list.
 5. `getRandomSongs`, `getAlbumList2` and every other method pass through.
@@ -309,7 +348,9 @@ recommender. Two things add to the upstream's own answer:
     - the `interim`, `interim-then-real` and `client-left` counters, with a
       WARN when interims are more than a fifth of misses, since that means
       the upstream is slow;
-    - which users are resting under the backoff.
+    - which users are resting under the backoff;
+    - "busy follow-ups: stored N, later used M" and "empty retries: run N,
+      filled M", printed as "none yet" while N is 0.
   - `subslip cache stats` and `subslip cache purge [--expired]`.
   - `subslip version`.
 
@@ -330,6 +371,7 @@ Environment variables, optionally from a `.env` file (`--env <path>`, default
 | `PRECACHE_ON_PLAY` | true (`false`; `auto` is read as `true`) |
 | `BACKGROUND_MAX_CONCURRENT` | 2 |
 | `MISS_WAIT_SECONDS` / `INTERIM_BUDGET_SECONDS` | 22 / 6 (0 turns the interim off) |
+| `EMPTY_RETRY_SECONDS` | 10 (0 turns the retry off) |
 | `MAX_SEARCH_LOOKUPS` / `SUPPLEMENT_DEADLINE_SECONDS` | 20 / 20 |
 | `FETCH_ON_PLAY_DELAY_SECONDS` | 10 |
 | `REMOTE_STATION_API_QUERY_RATE_LIMIT_SECONDS` | 10 |

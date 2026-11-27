@@ -143,6 +143,7 @@ in [`.env.example`](.env.example). The ones you are most likely to change:
 | `LISTEN_ADDR` | `0.0.0.0:5276` | Where clients connect |
 | `PRECACHE_ON_PLAY` | `true` | `false` stops background pre-caching (`auto`, from v0.1, is read as `true`) |
 | `MISS_WAIT_SECONDS` / `INTERIM_BUDGET_SECONDS` | 22 / 6 | When to send the interim list, and how long building it may take; `0` turns it off |
+| `EMPTY_RETRY_SECONDS` | 10 | Ask once more after your server answers a mix with no tracks; `0` turns it off |
 | `MIN_MIX_TRACKS` / `MAX_MIX_TRACKS` | 15 / 25 | Top-up threshold and mix size |
 | `CACHE_TTL_HOURS` / `CACHE_REFRESH_HOURS` | 24 / 6 | Longest a mix is served / when it is rebuilt |
 | `REQUIRE_AUTH` | `true` | Check credentials with the server before serving from cache |
@@ -167,7 +168,7 @@ line, status event and error message. `/subslip/health` says only `ok`;
 
 - **`X-SubSlip` response header** on every response: `passthrough`,
   `hit;age=<seconds>`, `miss`, `interim` (the server was slow; a short related
-  list was sent and the real mix is stored for next time), `busy` (proxied because another Instant Mix for
+  list was sent and the real mix is stored for next time), `busy` (proxied unchanged, and stored for next time when it is a full mix, because another Instant Mix for
   that user was in flight), `auth-failed`, `upstream-error`, or
   `fallback:<code>` when SubSlip gave up and proxied the request.
 - **`subslip doctor`** checks settings, the cache, the server, a login, cold

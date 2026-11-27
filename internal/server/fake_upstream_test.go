@@ -22,6 +22,7 @@ type fakeUpstream struct {
 	similarCount int
 	libraryCount int
 	similarGate  chan struct{}
+	emptyFirst   int64    // this many Instant Mix calls answer with no songs first
 	calls        sync.Map // method -> *int64
 	streamBody   string
 }
@@ -84,7 +85,11 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 			<-f.similarGate
 		}
 		songs := []any{}
-		for i := 0; i < f.similarCount; i++ {
+		n := f.similarCount
+		if atomic.AddInt64(&f.emptyFirst, -1) >= 0 {
+			n = 0
+		}
+		for i := 0; i < n; i++ {
 			songs = append(songs, map[string]any{"id": fmt.Sprintf("%s%d", prefix, i), "title": fmt.Sprintf("T%d", i), "artist": "Art"})
 		}
 		element := "similarSongs2"

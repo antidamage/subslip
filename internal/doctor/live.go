@@ -96,6 +96,27 @@ func (d *run) checkStatus(ctx context.Context, client *http.Client, base string)
 			"The upstream failed three background builds in a row for this user. Check the upstream's own logs.")
 	}
 	d.slowUpstream(doc.Record.Counters)
+	d.followUps(doc.Record.Counters)
+}
+
+// followUps reports whether storing busy answers and retrying empty builds
+// pay off. Below 1 in 10 after 50 retries, the retry is not worth keeping.
+func (d *run) followUps(c map[string]int64) {
+	d.add(Info, "busy follow-ups", ratio("stored", c["busy-stored"], "later used", c["busy-stored-then-hit"])+
+		fmt.Sprintf(" (%d not stored)", c["busy-skipped"]), "")
+	retries, filled := c["empty-retry"], c["empty-retry-filled"]
+	d.add(Info, "empty retries", ratio("run", retries, "filled", filled), "")
+	if retries >= 50 && filled*10 < retries {
+		d.add(Warn, "empty retries", fmt.Sprintf("only %d of %d retries filled", filled, retries),
+			"Retrying empty builds is not paying off for this upstream. EMPTY_RETRY_SECONDS=0 turns it off.")
+	}
+}
+
+func ratio(first string, a int64, second string, b int64) string {
+	if a == 0 {
+		return first + " none yet"
+	}
+	return fmt.Sprintf("%s %d, %s %d", first, a, second, b)
 }
 
 // slowUpstream reports the interim and client-left counters. Interims on more

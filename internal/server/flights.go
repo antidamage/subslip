@@ -5,7 +5,10 @@
 // call, interim), playhook.go (background builds join the same flights).
 //
 // A flight's upstream call runs detached from every request: a client that
-// hangs up does not cancel it, so its answer is still stored (spec 5.3).
+// hangs up does not cancel it, so its answer is still stored (spec 5.3). A
+// flight stays joinable until its leader's onDone has stored the result (or
+// handed it to the background slots), so a request in that window gets the
+// answer instead of a second upstream call (spec 5.4).
 package server
 
 import (
@@ -20,9 +23,10 @@ import (
 
 // flight is one upstream Instant Mix call for (user, song).
 type flight struct {
-	done chan struct{}
-	res  *mix.Stage1Result
-	err  error
+	done     chan struct{} // the upstream call returned; res and err are set
+	finished chan struct{} // onDone has returned and the flight left the map
+	res      *mix.Stage1Result
+	err      error
 
 	// The interim is assembled at most once per flight and shared by joiners.
 	interimOnce sync.Once
@@ -130,8 +134,8 @@ var errFlightPanicked = errors.New("shared upstream call panicked")
 // join returns the flight for (user, id), starting it when none is running.
 // leader is true for the caller that started it. The call runs in its own
 // goroutine with its own deadline, never on a request's context. When it
-// returns, done is closed and then the leader's onDone (when set) runs in
-// that goroutine.
+// returns, done is closed; then the leader's onDone (when set) runs in that
+// goroutine; then the flight leaves the map and finished is closed.
 func (f *flights) join(user, id string, timeout time.Duration,
 	call func(ctx context.Context) (*mix.Stage1Result, error),
 	onDone func(fl *flight)) (fl *flight, leader bool) {
@@ -141,7 +145,7 @@ func (f *flights) join(user, id string, timeout time.Duration,
 		f.mu.Unlock()
 		return existing, false
 	}
-	fl = &flight{done: make(chan struct{}), err: errFlightPanicked}
+	fl = &flight{done: make(chan struct{}), finished: make(chan struct{}), err: errFlightPanicked}
 	f.calls[key] = fl
 	f.mu.Unlock()
 	go f.run(key, fl, timeout, call, onDone)
@@ -153,14 +157,17 @@ func (f *flights) join(user, id string, timeout time.Duration,
 // since this goroutine has no request to fall back to.
 func (f *flights) run(key string, fl *flight, timeout time.Duration,
 	call func(ctx context.Context) (*mix.Stage1Result, error), onDone func(fl *flight)) {
+	defer func() {
+		f.mu.Lock()
+		delete(f.calls, key)
+		f.mu.Unlock()
+		close(fl.finished)
+	}()
 	func() {
 		defer func() {
 			if p := recover(); p != nil && f.panicked != nil {
 				f.panicked("upstream call", p)
 			}
-			f.mu.Lock()
-			delete(f.calls, key)
-			f.mu.Unlock()
 			close(fl.done)
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

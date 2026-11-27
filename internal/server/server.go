@@ -12,6 +12,8 @@
 //     per-user flood rule.
 //   - playhook.go    stream / scrobble: schedules background builds.
 //   - backoff.go     rests a user's pre-cache after failed builds.
+//   - busy.go        the flood rule's pass-through, copied and stored.
+//   - retry.go       one more upstream call after an empty build.
 //   - status.go      /subslip/health and /subslip/status.
 //
 // Hard rule (spec section 2): anything SubSlip cannot do degrades to plain
@@ -68,6 +70,7 @@ type Server struct {
 	rec     *diag.Recorder
 	flights *flights
 	backoff *backoff
+	retries *retries
 	now     func() time.Time
 
 	identity  atomic.Value // upstream.Identity
@@ -96,6 +99,7 @@ func New(opts Options) *Server {
 		s.rec.Record("panic", "", "", where)
 	}
 	s.backoff = newBackoff(clock.Now)
+	s.retries = newRetries()
 	s.builder = &mix.Builder{
 		Up: s.up, MinTracks: cfg.MinMixTracks, MaxTracks: cfg.MaxMixTracks,
 		MaxSearchLookups: cfg.MaxSearchLookups, SupplementDeadline: cfg.SupplementDeadline, Log: opts.Logger,

@@ -119,7 +119,8 @@ func (s *Server) configSummary() map[string]any {
 		"mixRateLimit": c.MixRateLimit.String(), "listenBrainz": c.ListenBrainzEnabled,
 		"buildTimeout": c.BuildTimeout.String(), "backgroundMaxConcurrent": c.BackgroundMaxConcurrent,
 		"missWait": c.MissWait.String(), "interimBudget": c.InterimBudget.String(),
-		"logLevel": c.LogLevel,
+		"emptyRetry": c.EmptyRetry.String(),
+		"logLevel":   c.LogLevel,
 	}
 }
 

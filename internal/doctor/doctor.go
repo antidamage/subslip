@@ -98,7 +98,7 @@ func (d *run) checkCache(ctx context.Context) {
 		d.add(Fail, "cache database", "opened but cannot be read: "+err.Error(), "Run `subslip cache purge`, or delete the file while the service is stopped.")
 		return
 	}
-	d.add(Pass, "cache database", fmt.Sprintf("%s: %d mixes (%d fresh), %d pre-cache users",
+	d.add(Pass, "cache database", fmt.Sprintf("%s: %d mixes (%d fresh), %d users with cached mixes",
 		d.cfg.DBPath, stats.Mixes, stats.FreshMixes, stats.Users), "")
 }
 

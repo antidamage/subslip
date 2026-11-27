@@ -151,3 +151,38 @@ func hasEvent(h *harness, kind string) bool {
 	}
 	return false
 }
+
+// A flight stays joinable until its result is stored (spec 5.4): a tap that
+// arrives after the upstream answered but before the store gets that answer,
+// with no second upstream call.
+func TestTapWhileStoringJoinsTheFlight(t *testing.T) {
+	h := newHarness(t, 20, map[string]string{"MISS_WAIT_SECONDS": "0"})
+	storing := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	// Only this test's song: background flights left over from earlier tests
+	// may still be finishing while the hook is set.
+	testHookBeforeStore = func(user, id string) {
+		if id != "storing-seed" {
+			return
+		}
+		once.Do(func() { close(storing) })
+		<-release
+	}
+	defer func() { testHookBeforeStore = nil }()
+	h.get(t, "/rest/stream?"+alice+"&id=storing-seed", nil)
+	select {
+	case <-storing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the background build never reached the store")
+	}
+	resp, body := h.get(t, "/rest/getSimilarSongs2?"+alice+"&id=storing-seed&f=json", nil)
+	close(release)
+	if resp.Header.Get(HeaderOutcome) != "miss" || mixCount(t, body) != 20 {
+		t.Fatalf("outcome %q with %d tracks", resp.Header.Get(HeaderOutcome), mixCount(t, body))
+	}
+	waitStored(t, h, "alice", "storing-seed")
+	if n := h.up.count("getSimilarSongs2"); n != 1 {
+		t.Fatalf("upstream getSimilarSongs2 called %d times, want 1", n)
+	}
+}

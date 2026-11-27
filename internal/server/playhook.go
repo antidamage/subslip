@@ -19,6 +19,10 @@ import (
 	"github.com/antidamage/subslip/internal/upstream"
 )
 
+// testHookBeforeStore, when set by a test, runs in a background flight after
+// the upstream answered and before the mix is stored.
+var testHookBeforeStore func(user, id string)
+
 func (s *Server) playHook(req *subsonic.Request) {
 	if s.store == nil || s.cfg.PrecacheMode == "false" {
 		return
@@ -44,7 +48,8 @@ func (s *Server) playHook(req *subsonic.Request) {
 // backgroundJob builds and stores the mix for (user, id). Unless force is set
 // it first checks the cache and skips a mix that is still fresh enough not to
 // need a refresh, which costs no upstream call. It joins any flight already
-// running for the song; the flight's starter stores the result.
+// running for the song; whoever started the flight stores the result, in the
+// flight's own goroutine.
 func (s *Server) backgroundJob(user, id string, a subsonic.Auth, force bool) func(context.Context) {
 	return func(ctx context.Context) {
 		if !force {
@@ -55,26 +60,41 @@ func (s *Server) backgroundJob(user, id string, a subsonic.Auth, force bool) fun
 		}
 		fl, leader := s.flights.join(user, id, s.cfg.BuildTimeout, func(ctx context.Context) (*mix.Stage1Result, error) {
 			return s.builder.Stage1(ctx, a, "getsimilarsongs2", id, s.cfg.MaxMixTracks)
-		}, nil)
+		}, func(fl *flight) { s.afterBackgroundFlight(user, id, a, fl) })
+		// The flight stores the result itself, so a job whose own deadline ends
+		// first loses nothing; it only stops holding its slot.
 		select {
-		case <-fl.done:
+		case <-fl.finished:
 		case <-ctx.Done():
-			s.backgroundFailed(user, id, ctx.Err())
 			return
 		}
-		if fl.err != nil {
-			s.backgroundFailed(user, id, fl.err)
-			return
-		}
-		s.backoff.succeeded(user)
 		if !leader {
 			s.rec.Record("background:joined", user, id, "a request started this call; it stores the mix")
-			return
 		}
-		s.storeResult(ctx, user, id, s.builder.Finish(ctx, a, id, fl.res))
-		if fl.interimWasSent() && len(fl.res.Songs) > 0 {
-			s.rec.Count("interim-then-real")
-		}
+	}
+}
+
+// afterBackgroundFlight runs in the flight goroutine when a flight a
+// background build started has finished: it records failures for the backoff
+// and stores the finished mix.
+func (s *Server) afterBackgroundFlight(user, id string, a subsonic.Auth, fl *flight) {
+	if fl.err != nil {
+		s.backgroundFailed(user, id, fl.err)
+		return
+	}
+	s.backoff.succeeded(user)
+	if testHookBeforeStore != nil {
+		testHookBeforeStore(user, id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.BuildTimeout)
+	defer cancel()
+	result := s.builder.Finish(ctx, a, id, fl.res)
+	s.storeResult(ctx, user, id, result)
+	if len(result.Songs) == 0 {
+		s.afterEmpty(user, id, a)
+	}
+	if fl.interimWasSent() && len(fl.res.Songs) > 0 {
+		s.rec.Count("interim-then-real")
 	}
 }
 
@@ -85,6 +105,9 @@ func (s *Server) backgroundFailed(user, id string, err error) {
 	}
 	s.rec.Record(kind, user, id, err.Error())
 	s.log.Debug("background build failed", "user", user, "song", id, "error", err)
+	if s.isRetry(user, id) {
+		return // an empty retry never counts toward the backoff
+	}
 	if s.backoff.failed(user) {
 		s.rec.Record("background:resting", user, id, fmt.Sprintf("%d failed builds in a row; pre-cache rests for %s", backoffFailures, backoffRest))
 		s.log.Info("pre-cache resting after failed builds", "user", user, "for", backoffRest.String())
@@ -116,6 +139,7 @@ func (s *Server) storeResult(ctx context.Context, user, id string, result *mix.R
 		detail += "; " + result.Note
 	}
 	s.rec.Record("stored", user, id, detail)
+	s.retryFilled(user, id)
 	s.log.Info("mix stored", "user", user, "song", id, "tracks", len(result.Songs),
 		"supplemented", result.Supplemented, "source", result.Source, "ms", result.Took.Milliseconds())
 }
